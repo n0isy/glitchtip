@@ -24,6 +24,9 @@ GLITCHTIP_RUST_INGEST=false
 - `GLITCHTIP_INGEST_RATE_WINDOW`: positive window duration in seconds; default `60`.
 - Existing project-key `rate_limit_count` and `rate_limit_window` also apply.
   A missing/zero key window uses the configured default window.
+- `PUT /api/0/projects/{org}/{project}/keys/{key}/` persists explicitly supplied
+  `name` and `rateLimit` fields. Omitted fields stay unchanged; `rateLimit: null`
+  removes the per-key quota. Other key identity/project fields are not writable.
 - An active shared limit requires `VALKEY_URL`. All web replicas must use the
   same Valkey database/cache prefix. The fork rejects `GLITCHTIP_RUST_INGEST=true`
   at startup because that optional Rust fast path does not enforce these quotas.
@@ -70,11 +73,12 @@ one-hour pending-set expiry and notification delivery semantics are unchanged.
 ```sh
 docker build -f Dockerfile.n0isy \
   --build-arg REVISION="$(git rev-parse HEAD)" \
-  -t ghcr.io/n0isy/glitchtip:6.2.6-n0isy.1 .
+  -t ghcr.io/n0isy/glitchtip:6.2.6-n0isy.2 .
 ```
 
-The derivative uses the released image pinned by digest and copies only six
-changed Python source files. It retains the released frontend, dependencies,
+The derivative uses the released image pinned by digest and copies only the
+changed Python source files (seven in `n0isy.2`). It retains the released
+frontend, dependencies,
 Rust extension, SDK wire formats and sourcemap implementation. No database
 schema change or new dependency is introduced; update web/worker to the same
 image, preserve volumes, and keep the standard upstream migration entrypoint.
@@ -107,10 +111,25 @@ docker compose -f compose.fork-tests.yml exec -T web ruff check apps/ glitchtip/
 docker compose -f compose.fork-tests.yml down -v
 ```
 
-Validation on 2026-10-17: 15 new regression tests and 257 existing tests passed
+Validation of `n0isy.1` on 2026-10-17: 15 new regression tests and 257 existing tests passed
 (272 distinct tests across the runs). Four targeted regression scenarios fail
 when the three affected upstream endpoint/scheduler files are restored, then
 pass with the patch. `ruff check apps/ glitchtip/` passes. Repository-wide
 `ruff check .` reports the same 105 pre-existing findings as v6.2.6; Vulture
 reports the same two pre-existing findings (`sortBy`, `sender`). No unrelated
-upstream lint cleanup is included.
+upstream lint cleanup is included. `n0isy.2` additionally fixes the upstream
+key-update endpoint, which previously returned success without persisting any
+fields. HTTP regressions cover applying/clearing a quota followed by actual
+ingest requests, omitted-field preservation, identity protection and access
+checks. The original `6.2.6-n0isy.1` image/tag is retained unchanged.
+
+
+For `n0isy.2`, three added HTTP mutation scenarios fail on the unchanged upstream
+endpoint (the access-control regression already passes). With the save fix,
+all 48 project API, quota and scheduler-boundary tests pass:
+
+```sh
+docker compose -f compose.fork-tests.yml exec -T web python manage.py test \
+  apps.projects apps.event_ingest.tests.test_quotas \
+  apps.alerts.tests.test_scheduler_boundary --noinput --keepdb
+```

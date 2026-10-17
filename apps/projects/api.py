@@ -283,11 +283,26 @@ async def update_project_key(
     key_id: UUID,
     payload: ProjectKeyIn,
 ):
-    return await aget_object_or_404(
+    key = await aget_object_or_404(
         get_project_keys_queryset(
             request.auth.user_id, organization_slug, project_slug, key_id=key_id
         )
     )
+    # Only write editable fields that were actually supplied. Omitting a quota
+    # preserves it; explicitly sending null clears it.
+    fields = []
+    if "name" in payload.model_fields_set:
+        key.name = payload.name or ""
+        fields.append("name")
+    if "rate_limit" in payload.model_fields_set:
+        key.rate_limit_count = payload.rate_limit.count if payload.rate_limit else None
+        key.rate_limit_window = (
+            payload.rate_limit.window if payload.rate_limit else None
+        )
+        fields.extend(["rate_limit_count", "rate_limit_window"])
+    if fields:
+        await key.asave(update_fields=fields)
+    return key
 
 
 @router.post(
@@ -302,7 +317,7 @@ async def create_project_key(
     project_slug: str,
     payload: ProjectKeyIn,
 ):
-    """Create new key for project. Rate limiting not implemented."""
+    """Create a project key with an optional per-key ingest quota."""
     project = await aget_object_or_404(
         get_projects_queryset(request.auth.user_id, organization_slug),
         slug=project_slug,

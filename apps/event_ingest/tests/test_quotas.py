@@ -11,6 +11,7 @@ from django.test import RequestFactory, override_settings
 from model_bakery import baker
 
 from apps.event_ingest.quotas import reserve_ingest_quota
+from apps.organizations_ext.constants import OrganizationUserRole
 
 from .utils import EventIngestTestCase, run_async_closing
 
@@ -69,6 +70,102 @@ class IngestQuotaTestCase(EventIngestTestCase):
         return RequestFactory().post(
             f"/?sentry_key={key or self.projectkey.public_key}"
         )
+
+    def key_management_auth(self, scopes=None):
+        user = baker.make("users.User")
+        self.organization.add_user(user, OrganizationUserRole.ADMIN)
+        token = baker.make("api_tokens.APIToken", user=user)
+        token.add_permissions(scopes or ["project:read", "project:write"])
+        url = f"/api/0/projects/{self.organization.slug}/{self.project.slug}/keys/{self.projectkey.public_key}/"
+        return url, {"HTTP_AUTHORIZATION": f"Bearer {token.token}"}
+
+    def test_http_put_applies_key_quota_to_following_ingest(self):
+        url, auth = self.key_management_auth()
+        response = self.client.put(
+            url,
+            {"name": "limited", "rateLimit": {"count": 1, "window": 60}},
+            content_type="application/json",
+            **auth,
+        )
+        self.assertEqual(response.status_code, 200)
+        with patch("apps.event_ingest.views.ingest_event", new_callable=AsyncMock):
+            self.assertEqual(self.store().status_code, 200)
+            rejected = self.envelope()
+        self.assertEqual(rejected.status_code, 429)
+        self.assertTrue(1 <= int(rejected["Retry-After"]) <= 60)
+        saved = self.client.get(url, **auth).json()
+        self.assertEqual(saved["rateLimit"], {"count": 1, "window": 60})
+        self.assertEqual(saved["label"], "limited")
+
+    def test_http_put_preserves_omitted_quota_and_clears_explicit_null(self):
+        self.projectkey.rate_limit_count = 1
+        self.projectkey.rate_limit_window = 60
+        self.projectkey.save()
+        url, auth = self.key_management_auth()
+        self.assertEqual(self.store().status_code, 200)
+        response = self.client.put(
+            url, {"name": "renamed"}, content_type="application/json", **auth
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.envelope().status_code, 429)
+        response = self.client.put(
+            url, {"rateLimit": None}, content_type="application/json", **auth
+        )
+        self.assertEqual(response.status_code, 200)
+        with patch("apps.event_ingest.views.ingest_event", new_callable=AsyncMock):
+            self.assertEqual(self.envelope().status_code, 200)
+        saved = self.client.get(url, **auth).json()
+        self.assertIsNone(saved["rateLimit"])
+        self.assertEqual(saved["label"], "renamed")
+
+    def test_http_put_cannot_change_key_identity_or_project(self):
+        url, auth = self.key_management_auth()
+        original_public = self.projectkey.public_key
+        response = self.client.put(
+            url,
+            {
+                "name": "safe",
+                "public": uuid4().hex,
+                "projectId": 999999,
+                "id": 999999,
+                "isActive": False,
+            },
+            content_type="application/json",
+            **auth,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.projectkey.refresh_from_db()
+        self.assertEqual(self.projectkey.name, "safe")
+        self.assertEqual(self.projectkey.public_key, original_public)
+        self.assertEqual(self.projectkey.project_id, self.project.pk)
+        self.assertTrue(self.projectkey.is_active)
+
+    def test_http_put_requires_write_scope_and_organization_access(self):
+        url, auth = self.key_management_auth(["project:read"])
+        self.assertEqual(
+            self.client.put(
+                url,
+                {"rateLimit": {"count": 1, "window": 60}},
+                content_type="application/json",
+                **auth,
+            ).status_code,
+            403,
+        )
+        _, auth = self.key_management_auth()
+        other = baker.make("projects.Project")
+        key = other.projectkey_set.first()
+        other_url = f"/api/0/projects/{other.organization.slug}/{other.slug}/keys/{key.public_key}/"
+        self.assertEqual(
+            self.client.put(
+                other_url,
+                {"name": "forbidden"},
+                content_type="application/json",
+                **auth,
+            ).status_code,
+            404,
+        )
+        key.refresh_from_db()
+        self.assertNotEqual(key.name, "forbidden")
 
     def test_envelope_and_store_share_project_budget_across_dsns(self):
         second_key = baker.make("projects.ProjectKey", project=self.project)
