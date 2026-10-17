@@ -29,6 +29,7 @@ from glitchtip.api.exceptions import ThrottleException
 from .authentication import get_project_by_key
 from .otlp import decode_otlp_logs
 from .pii_scrubber import resolve_scrubber
+from .quotas import reserve_ingest_quota
 from .rust_envelope import (
     EnvelopeTooBig,
     decompress_body,
@@ -92,6 +93,10 @@ async def otlp_logs_view(request: HttpRequest) -> HttpResponse:
     except Exception as e:
         logger.warning("OTLP logs decode error on %s", request.path, exc_info=e)
         return JsonResponse({"detail": "Malformed OTLP logs payload"}, status=400)
+
+    quota = await reserve_ingest_quota(request, project, len(log_items))
+    if quota is not None:
+        return quota
 
     if log_items:
         scrubber = resolve_scrubber(

@@ -2,7 +2,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.cache import caches
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.tasks import task
 from django.utils import timezone
 
@@ -67,12 +67,56 @@ async def process_event_alerts():
             .values_list("id", flat=True)
         )
         if issue_ids:
-            issues = issues.filter(id__in=issue_ids)
-        issue_id_list = [i async for i in issues]
+            # The minute scheduler can run a few seconds late. Measuring back
+            # from execution time silently loses an event received immediately
+            # after the previous check (especially a one-minute/one-event rule).
+            # For pending issues, evaluate the actual event-rate window ending
+            # at server receipt time, without widening the configured timespan.
+            candidates = Issue.objects.filter(
+                project_id=alert.project_id, id__in=issue_ids
+            ).exclude(notification__project_alert=alert)
+            issue_id_list = []
+            batch = []
+            async for issue_id, last_seen in candidates.values_list(
+                "id", "index__last_seen"
+            ):
+                batch.append((issue_id, last_seen))
+                if len(batch) == 200:
+                    issue_id_list.extend(await pending_alert_issues(alert, batch))
+                    batch = []
+            if batch:
+                issue_id_list.extend(await pending_alert_issues(alert, batch))
+        else:
+            issue_id_list = [i async for i in issues]
         if issue_id_list:
             notification = await alert.notification_set.acreate()
             await notification.issues.aset(issue_id_list)
             await send_notification.aenqueue(notification.pk)
+
+
+async def pending_alert_issues(alert, candidates):
+    windows = Q()
+    for issue_id, last_seen in candidates:
+        start = last_seen - timedelta(minutes=alert.timespan_minutes)
+        windows |= Q(
+            id=issue_id,
+            issueevent__id__gte=UUID7Helper._uuid7_for_timestamp(
+                start, min_random=True
+            ),
+            issueevent__id__lte=UUID7Helper._uuid7_for_timestamp(last_seen),
+        )
+    eligible = (
+        Issue.objects.filter(
+            windows,
+            project_id=alert.project_id,
+            issueevent__organization_id=alert.project.organization_id,
+        )
+        .exclude(notification__project_alert=alert)
+        .annotate(num_events=Count("issueevent"))
+        .filter(num_events__gte=alert.quantity)
+        .values_list("id", flat=True)
+    )
+    return [issue_id async for issue_id in eligible]
 
 
 @task

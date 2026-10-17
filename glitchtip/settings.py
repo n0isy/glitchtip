@@ -744,6 +744,7 @@ WSGI_APPLICATION = "glitchtip.wsgi.application"
 
 # Defaults to True because Sentry SDKs send events from arbitrary user domains.
 # Set to False and configure CORS_ORIGIN_WHITELIST only if you control all client origins.
+CORS_EXPOSE_HEADERS = ["Retry-After", "X-Sentry-Rate-Limits"]
 CORS_ORIGIN_ALLOW_ALL = env.bool("CORS_ORIGIN_ALLOW_ALL", True)
 CORS_ORIGIN_WHITELIST = env.tuple("CORS_ORIGIN_WHITELIST", str, default=())
 CORS_ALLOW_HEADERS = list(default_headers) + [
@@ -931,6 +932,26 @@ else:
 # cache/broker ops ride gt_rust's valkey driver; without it they run against
 # the vcache_entry table and the db_queuedtask broker on the same pool.
 GLITCHTIP_RUST_INGEST = env.bool("GLITCHTIP_RUST_INGEST", False)
+# Self-hosted ingest protection. Quotas also honor ProjectKey rate_limit fields.
+GLITCHTIP_INGEST_RATE_LIMIT = env.int("GLITCHTIP_INGEST_RATE_LIMIT", 0)
+GLITCHTIP_INGEST_GLOBAL_RATE_LIMIT = env.int("GLITCHTIP_INGEST_GLOBAL_RATE_LIMIT", 0)
+GLITCHTIP_INGEST_RATE_WINDOW = env.int("GLITCHTIP_INGEST_RATE_WINDOW", 60)
+if (
+    min(GLITCHTIP_INGEST_RATE_LIMIT, GLITCHTIP_INGEST_GLOBAL_RATE_LIMIT) < 0
+    or GLITCHTIP_INGEST_RATE_WINDOW < 1
+):
+    raise ImproperlyConfigured(
+        "Ingest limits must be nonnegative and the window positive"
+    )
+if GLITCHTIP_RUST_INGEST:
+    raise ImproperlyConfigured(
+        "The n0isy fork requires GLITCHTIP_RUST_INGEST=false to enforce DSN and shared ingest quotas"
+    )
+if (
+    GLITCHTIP_INGEST_RATE_LIMIT or GLITCHTIP_INGEST_GLOBAL_RATE_LIMIT
+) and not VALKEY_URL:
+    raise ImproperlyConfigured("Ingest quotas require VALKEY_URL")
+
 # Add other settings that apply to both methods.
 for db_config in DATABASES.values():
     # gt_rust.django_backend extends Django's stock postgresql backend and

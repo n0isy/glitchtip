@@ -15,6 +15,7 @@ from glitchtip.partition_manager import UUID7Helper
 
 from .authentication import EventAuthHttpRequest, event_auth
 from .pii_scrubber import resolve_scrubber
+from .quotas import reserve_ingest_quota
 from .schema import (
     CSPIssueEventSchema,
     EventIngestSchema,
@@ -61,6 +62,9 @@ async def event_store(
     Event store is the original event ingest API from OSS Sentry but is used less often
     Unlike Envelope, it accepts only one Issue event.
     """
+    quota = await reserve_ingest_quota(request, request.auth)
+    if quota is not None:
+        return quota
     if await cache.aadd("uuid" + payload.event_id.hex, True) is False:
         raise ValidationError([{"message": "Duplicate event id"}])
 
@@ -98,6 +102,9 @@ async def event_security(
     Reformats event to make CSP browser format match more standard
     event format.
     """
+    quota = await reserve_ingest_quota(request, request.auth)
+    if quota is not None:
+        return quota
     event = CSPIssueEventSchema(csp=payload.csp_report.dict(by_alias=True))
     if client_ip := get_ip_address(request):
         if event.user:

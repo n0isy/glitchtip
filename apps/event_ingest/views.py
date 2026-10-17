@@ -27,6 +27,7 @@ from .api import get_ip_address
 from .authentication import EventAuthHttpRequest, event_auth
 from .minidump_event import minidump_to_event
 from .pii_scrubber import resolve_scrubber
+from .quotas import envelope_cost, reserve_ingest_quota
 from .rust_envelope import (
     EnvelopeTooBig,
     decompress_body,
@@ -137,6 +138,9 @@ async def event_envelope_view(request: EventAuthHttpRequest, project_id: int):
         )
         # Return 400 Bad Request for malformed envelope structure
         return JsonResponse({"detail": "Invalid envelope header"}, status=400)
+    quota = await reserve_ingest_quota(request, project, envelope_cost(envelope))
+    if quota is not None:
+        return quota
     envelope_header_event_id = envelope_header.event_id
 
     # Track minidump attachment for SDK-based minidump submissions.
@@ -447,6 +451,10 @@ async def minidump_view(request: EventAuthHttpRequest, project_id: int):
             sentry_meta = orjson.loads(sentry_raw)
         except orjson.JSONDecodeError:
             pass  # Ignore malformed metadata
+
+    quota = await reserve_ingest_quota(request, project)
+    if quota is not None:
+        return quota
 
     # Parse minidump into event
     try:
