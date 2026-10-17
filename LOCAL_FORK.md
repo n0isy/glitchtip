@@ -94,6 +94,19 @@ release and sourcemap tests verify compatibility.
 The test Valkey address is `redis://valkey:6379/15`; run in an isolated Compose
 network. No production credentials or deployment configuration are included.
 
+```sh
+docker compose -f compose.fork-tests.yml up -d --build
+docker compose -f compose.fork-tests.yml exec -T web python manage.py test \
+  apps.event_ingest.tests.test_quotas apps.alerts \
+  apps.event_ingest.tests.test_envelope_api apps.event_ingest.tests.test_store_api \
+  apps.event_ingest.tests.test_security_api apps.event_ingest.tests.test_minidump \
+  apps.event_ingest.tests.test_otlp_logs apps.event_ingest.tests.test_authentication \
+  apps.event_ingest.tests.test_compression apps.files apps.releases apps.sourcecode \
+  --noinput --keepdb
+docker compose -f compose.fork-tests.yml exec -T web ruff check apps/ glitchtip/
+docker compose -f compose.fork-tests.yml down -v
+```
+
 Validation on 2026-10-17: 15 new regression tests and 257 existing tests passed
 (272 distinct tests across the runs). Four targeted regression scenarios fail
 when the three affected upstream endpoint/scheduler files are restored, then

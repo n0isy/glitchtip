@@ -1,0 +1,27 @@
+# Isolated regression services. No ports or production credentials are exposed.
+name: glitchtip-fork-tests
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command: [postgres, -c, max_connections=300, -c, max_locks_per_transaction=512]
+  valkey:
+    image: valkey/valkey:9
+  web:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM glitchtip/glitchtip:6.2.6@sha256:a3d8eb1b36c1e1603d55ab32711ea3dd8115874742a781a57391a62a16e0dff6
+        USER root
+        RUN pip install --no-cache-dir freezegun==1.5.5 model-bakery-async==1.23.6 aioresponses==0.7.9 coverage==7.13.5 tblib==3.2.2 django-debug-toolbar==7.0.0 ruff==0.16.0 vulture==2.16
+    user: root
+    working_dir: /code
+    command: [sleep, infinity]
+    environment:
+      DATABASE_URL: postgres://postgres@postgres:5432/postgres
+      VALKEY_URL: redis://valkey:6379/0
+      SECRET_KEY: local-isolated-regression-tests
+      GLITCHTIP_DOMAIN: http://testserver
+    volumes:
+      - .:/code
