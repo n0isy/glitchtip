@@ -87,14 +87,15 @@ Tests use isolated PostgreSQL 18 and Valkey 9, plus the exact v6.2.6 runtime.
 The additional tests exercise concurrent atomic reservation, project/global/key
 limits with billing disabled, DSN and endpoint switching, compressed multi-event
 envelopes, whole-batch rejection, expiry, failure handling, and scheduler drift
-without widening the configured rate window. Existing ingest, alerts, files,
+without widening the configured rate window, client clocks a year in either
+direction, and 201 pending issues across two rules. Existing ingest, alerts, files,
 release and sourcemap tests verify compatibility.
 
 The test Valkey address is `redis://valkey:6379/15`; run in an isolated Compose
 network. No production credentials or deployment configuration are included.
 
-Validation on 2026-10-17: 13 new regression tests and 257 existing tests passed
-(270 distinct tests across the runs). Four targeted regression scenarios fail
+Validation on 2026-10-17: 15 new regression tests and 257 existing tests passed
+(272 distinct tests across the runs). Four targeted regression scenarios fail
 when the three affected upstream endpoint/scheduler files are restored, then
 pass with the patch. `ruff check apps/ glitchtip/` passes. Repository-wide
 `ruff check .` reports the same 105 pre-existing findings as v6.2.6; Vulture
